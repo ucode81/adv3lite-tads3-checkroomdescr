@@ -633,7 +633,7 @@ checkDescrObj: object
             } catch (Exception ex) {
                 continue;
             }
-            if (sayText != ' ' || (dest != nil && dataType(dest) == TypeObject &&
+            if (sayText != '' || (dest != nil && dataType(dest) == TypeObject &&
                                     (dest.ofKind(Room) || dest.ofKind(TravelConnector)))) {
                 exits += dest;
                 exitDirs += dirs[dirProp];
