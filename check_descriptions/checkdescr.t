@@ -3,7 +3,7 @@
 #ifdef __DEBUG
 
 // set this to see how the individual words in a description are being parsed up
-// #define DEBUG_PARSER_MAP
+//#define DESCR_DEBUG_PARSER_MAP
 
 /*
  *   One of the difficulties of creating text adventure is to ensure you have covered "all
@@ -36,9 +36,11 @@
 #define DESCR_WORD_ADJ 11
 #define DESCR_WORD_ADJORNOUN 12
 #define DESCR_WORD_PURGEHARD 13
+#define DESCR_WORD_PURGENEXTNOUN 14      // delete ahead to next noun, reset by verb
 
 /* per Eric Eve suggestion to reduce unnecessary warnings */
 property ignore_nouns;
+
 
 /*
  *   This section handles parsing up the output messages from a room description.
@@ -62,6 +64,7 @@ checkDescrObjTokenizer: Tokenizer
          *   word can start with any letter or number and then
          *   alphabetics, digits, hyphens, and apostrophes after that. (tokWord,tokString)
          */
+        ['integer', R'[0-9]+', tokInt, nil, nil],
         ['word', R'<AlphaNum>(<AlphaNum>|([-\']<AlphaNum>))*', tokWord, &tokCvtLower, nil],
         
         // handle , as a separate item for conversations
@@ -114,6 +117,12 @@ checkDescrObj: object
             // known words in the game to ignore
             foreach(v in ['you','me','i'])
                 addToWordMap(v,DESCR_WORD_YOU);
+            // known noun-verb words that take priority over action verbs
+            foreach(v in ['light','block'])
+                addToWordMap(v,DESCR_WORD_VERBORNOUN);
+            // known look ahead purge
+            foreach(v in purgeAheadWords)
+                addToWordMap(v,DESCR_WORD_PURGENEXTNOUN);
             // verbs beyond the action verbs
             foreach(v in extraVerbs)
                 addToWordMap(v,DESCR_WORD_VERB);
@@ -138,7 +147,7 @@ checkDescrObj: object
                 addToWordMap(v,DESCR_WORD_PURGEHARD);
             }
 
-            // add the known action verbs
+            // finally add the known action verbs
             v = firstObj(Action);
             while (v != nil) {
                 // not including any system commands, only verbs that are actions in game
@@ -152,7 +161,7 @@ checkDescrObj: object
                         if(i != nil)
                             vp = vp.substr(1,i-1);
                         vp = vp.trim();
-                        if(purgeWords.indexOf(vp) == nil)
+                        if(purgeWords.indexOf(vp) == nil && hardPurgeWords.indexOf(vp) == nil)
                             addToWordMap(vp,DESCR_WORD_VERB);
                     }
                 }
@@ -268,7 +277,10 @@ checkDescrObj: object
         // these words are look-ahead and wipe out any phrase even if a noun before
         local adjmaybe = 0, adj = 0, v, nlist = [];
         local gotArt = nil, gotAdjNoun = nil, gotNounVerb = nil;
+        local pendingNounSkip = nil;
         local unkIdx = 0;
+        // skip making direction adjective for these nouns
+        local specialDirSkip = ['wall','end','side'];
         
         for(local i in 1..toks.length()) {
             v = toks[i];
@@ -280,11 +292,27 @@ checkDescrObj: object
                 gotArt = gotAdjNoun = gotNounVerb = nil;
                 if(v[1].endsWith('ward'))
                     toks[i][1] = v[1].substr(1,-4);
+                // special nouns to consider as next that cause everything to be ignored
+                if(i != toks.length() && specialDirSkip.indexOf(toks[i+1][1]) != nil) {
+                    toks[i+1][2] = DESCR_WORD_PURGEHARD;
+                } else if(i != toks.length() && toks[i+1][2] == DESCR_WORD_NOUN) {
+                    if(adj == 0)
+                    {
+                        if(adjmaybe != 0)
+                            adj = adjmaybe;
+                        else if(unkIdx != 0)
+                            adj = unkIdx;
+                        else
+                            adj = i;
+                    }
+                    break;
+                }
                 // INTENTIONAL FALL THRU
                 
             case DESCR_WORD_NOUN:
                 // hard purge words wipe out the pending noun as a look-ahead
-                if(i != toks.length() && toks[i+1][2] != DESCR_WORD_PURGEHARD) {
+                if(!pendingNounSkip && i != toks.length() && toks[i+1][2] != DESCR_WORD_PURGEHARD) {
+                    // adjective is a possibility
                     if(adj == 0)
                     {
                         if(adjmaybe != 0)
@@ -302,7 +330,7 @@ checkDescrObj: object
             case DESCR_WORD_PURGEHARD:
                 // reset
                 adj = adjmaybe = unkIdx = 0;
-                gotArt = gotAdjNoun = gotNounVerb = nil;
+                gotArt = gotAdjNoun = gotNounVerb = pendingNounSkip = nil;
                 break;
 
             case DESCR_WORD_ART:
@@ -366,7 +394,11 @@ checkDescrObj: object
                             break;
                         }
                     }
-                    if(n != 0) {
+                    if(pendingNounSkip) {
+                        // reset
+                        adj = adjmaybe = unkIdx = 0;
+                        gotArt = gotAdjNoun = gotNounVerb = pendingNounSkip = nil;
+                    } else if(n != 0) {
                         // found noun
                         if(adj == 0)
                             adj = n;
@@ -381,6 +413,10 @@ checkDescrObj: object
                 } else {
                     gotNounVerb = true;
                 }
+                break;
+
+            case DESCR_WORD_PURGENEXTNOUN:
+                pendingNounSkip = true;
                 break;
                 
             case DESCR_WORD_UNKNOWN:
@@ -401,7 +437,7 @@ checkDescrObj: object
             case DESCR_WORD_PREP:
             case DESCR_WORD_YOU:
             case DESCR_WORD_PUNCT:
-                if(gotArt || gotNounVerb || gotAdjNoun) {
+                if(!pendingNounSkip && (gotArt || gotNounVerb || gotAdjNoun)) {
                     if((adjmaybe != 0 && adjmaybe <= i - 1) || (adj != 0 && adj < i-1) ||
                         (adjmaybe == 0 && adj == 0 && v[2] == DESCR_WORD_VERB)) {
                         nlist = nlist.append(extractPhrase(toks,
@@ -413,7 +449,7 @@ checkDescrObj: object
                 if(v[2] == DESCR_WORD_YOU)
                     ++i;
                 adj = adjmaybe = unkIdx = 0;
-                gotArt = gotAdjNoun = gotNounVerb = nil;
+                gotArt = gotAdjNoun = gotNounVerb = pendingNounSkip = nil;
                 break;
             
             default:
@@ -510,6 +546,8 @@ checkDescrObj: object
                     toks[i][2] = DESCR_WORD_UNKNOWN;
             } else if(toks[i][2] == tokString) {
                 toks[i][2] = DESCR_WORD_IGNORE;
+            } else if(toks[i][2] == tokInt) {
+                toks[i][2] = DESCR_WORD_PURGENEXTNOUN;
             } else {
                 toks[i][2] = DESCR_WORD_PUNCT;
             }
@@ -538,9 +576,9 @@ checkDescrObj: object
 //        s.insert(d,1);    // Stringbuffer insert not working -- complains not an int!
         s.append(d);
         s.append('\n- - - - - - - - - - - -\n');
-#ifdef DEBUG_PARSER_MAP
+#ifdef DESCR_DEBUG_PARSER_MAP
         // dump the description terms -- for debugging only
-        ival = ['n','p','v','a','o','x','n,v','.','=','*','P','j','j,n'];
+        ival = ['n','p','v','a','?','x','n,v','.','=','*','P','j','j,n','XX','->'];
         foreach (val in toks) {
             s.append(val[1] + '[' + ival[val[2]+1] + '] ');
         }
@@ -701,7 +739,7 @@ checkDescrObj: object
         'without','that','because','which','where','what','who','while','when',
         'whose', 'above','below','and','be','also','or','either','at','behind', 'against' ]
     // note the articles extended to include ownership as that is a clue to nouns as well
-    articles = ['a','an','the','your','my','his','her','its','their']
+    articles = ['a','an','the','his','her','its','their'] // your, my are special
     // simple set
     directions = ['east','north','west','south','northeast','northwest','southeast',
         'southwest', 'starboard', 'port', 'aft', 'fore', 'down','up']
@@ -709,7 +747,10 @@ checkDescrObj: object
     // words that immediately drop anything pending
     purgeWords = ['smell','hear','taste','heard','breeze','gust','sound','sight','from']
     // these are even more severe and will drop anything that is happening (noun found)
-    hardPurgeWords = ['of','by']
+    hardPurgeWords = ['of','by','foot','feet','inch','inches','meter','meters','metre','metres',
+        'yards','cm','centimeters','centimetres','mile','miles']
+    purgeAheadWords = ['one','two','three','four','five','siz','seven','eight','nine',
+        'ten','eleven','twelve','your','my']    // plus all numbers
 
     // adjectives: . if ambiguously adjective or noun
     adjs = [ 
@@ -805,7 +846,7 @@ checkDescrObj: object
         'father/s', '-fear/s', 'feature/s', 'fee/s', '-feeling/s', 'female/s', 'field/s',
         '-fight/s', 'figure/s', 'file/s', 'film/s', '-finance/s', 'finger/s',
         '.finish/es', '.fire/s', 'fish/es', 'flight', 'floor/s', 'flower/s',
-        '-focus/es', 'food', 'foot','feet', '.force/s', 'forest/s', 'form/s',
+        '-focus/es', 'food', '.force/s', 'forest/s', 'form/s',
         '-fortune/s', 'foundation/s', '.frame/s', '-freedom/s', '.front/s', 'fruit/s',
         'fuel', '-function/s', '-fund/s', 'furniture/s', '-futures', 'game/s',
         'garden/s', 'gas/es', 'gate/s', 'gear/s', 'gene/s', '-generation/s', 'gift/s',
@@ -892,7 +933,7 @@ checkDescrObj: object
         'sheet/s', 'shelf','shelves', 'shell/s', 'shelter/s', '-shift',
         '-shine', 'ship/s', 'shirt/s', '-shock', 'shoe/s', '-shoot/s', 'shop/s',
         'shore/s','shorts', '-shot/s', 'shoulder/s', '-shout',
-        '-side/s', 'sight/s', 'sign/s', 'signal/s', '-silence/s', 'silk',
+        '-side/s', 'sights', 'sign/s', 'signal/s', '-silence/s', 'silk',
         '-sin/s', 'singer/s', 'sink', '-sir/s', 'sister/s',
         'site/s', '-situation/s', '-size/s', '-skill/s', 'skin','-skins', 'skirt/s',
         'sky/-ies', 'slave/s',  '.slice','-slices', '.slide/s', '-slip',
@@ -946,7 +987,7 @@ checkDescrObj: object
         'wire/s', '-wise', '-wish/es',
         '-wonder/s', 'wood/s', 'wool', 'worker/s',
         '-worry/-ies', '-would', 'writer/s', 'writing/s',
-        'yard/s', '-yes/es', '-yesterday/s', '-yet',
+        '-yes/es', '-yesterday/s', '-yet',
         '-yours', 'youth/s', 'zone/s',
         
         // from another pass
