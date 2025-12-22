@@ -335,7 +335,17 @@ transient checkPuzzles: object
 
     // get room contents
     getRoomContents(room) {
-        return dropUnusable(room.notionalContents());
+        local nc = room.notionalContents();
+        // while notionalContents handles remaps.
+        // it does not handle a visible surface with items on it
+        foreach(local item in nc) {
+            if(item.ofKind(Surface)) {
+                foreach(local item2 in item.notionalContents()) {
+                    nc += item2;
+                }
+            }
+        }
+        return dropUnusable(nc);
     }
     
     // get inventory
@@ -566,6 +576,14 @@ transient checkPuzzles: object
             // see if checking rooms for the first time
             if(gstate.dirs == nil) {
                 exits = randList(getExitDirs(rm)); // purposely do this
+//                exits = [];
+//                idx = [];
+//                foreach(local dir in getExitDirs(rm)) { // get all of the directions
+//                    for(local i = 0; ++i <= exits.length();) {
+//                        
+//                    }
+//                    exits = exits.
+//                }
                 gameState[idx].dirs = exits;
                 gameState[idx].savegame();
             }
